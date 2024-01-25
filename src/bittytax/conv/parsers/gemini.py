@@ -71,9 +71,13 @@ def parse_gemini(
 def _parse_gemini_row(parser: DataParser, data_row: "DataRow") -> None:
     row_dict = data_row.row_dict
     data_row.timestamp = DataParser.parse_timestamp(row_dict["Date"])
+    asset = row_dict["Symbol"]
 
     if row_dict["Type"] in ("Credit", "Debit"):
-        asset = row_dict["Symbol"]
+        # Ignore transfers to and from a staking wallet.
+        if row_dict["Specification"] in ("Earn Transfer", "Earn Redemption"):
+            return
+
         if row_dict[f"Fee ({asset}) {asset}"]:
             fee_quantity = abs(Decimal(row_dict[f"Fee ({asset}) {asset}"]))
             fee_asset = asset
@@ -142,6 +146,27 @@ def _parse_gemini_row(parser: DataParser, data_row: "DataRow") -> None:
                 fee_asset=fee_asset,
                 wallet=WALLET,
             )
+    elif row_dict["Type"] == "Interest Credit":
+        data_row.t_record = TransactionOutRecord(
+            TrType.STAKING,
+            data_row.timestamp,
+            buy_quantity=Decimal(row_dict[f"Amount {asset}"]),
+            buy_asset=row_dict["Symbol"],
+            wallet=WALLET,
+        )
+    elif row_dict["Type"] == "Administrative Debit":
+        data_row.t_record = TransactionOutRecord(
+            TrType.SPEND,
+            data_row.timestamp,
+            sell_quantity=Decimal(0),
+            sell_asset=row_dict["Symbol"],
+            fee_quantity=abs(Decimal(row_dict[f"Amount {asset}"])),
+            fee_asset=row_dict["Symbol"],
+            wallet=WALLET,
+        )
+    # Skip internal transfers or informational rows.
+    elif row_dict["Type"] in ("Deposit", "Redeem", "Monthly Interest Summary"):
+        return
     else:
         raise UnexpectedTypeError(parser.in_header.index("Type"), "Type", row_dict["Type"])
 
@@ -166,7 +191,7 @@ def _split_trading_pair(symbol: str) -> Tuple[Optional[str], Optional[str]]:
 
 DataParser(
     ParserType.EXCHANGE,
-    "Gemini",
+    "Gemini Exchange",
     [
         "Date",
         "Time (UTC)",
@@ -186,6 +211,23 @@ DataParser(
         "Deposit Tx Output",
         "Withdrawal Destination",
         "Withdrawal Tx Output",
+    ],
+    header_fixed=False,
+    worksheet_name="Gemini",
+    all_handler=parse_gemini,
+)
+
+DataParser(
+    ParserType.EXCHANGE,
+    "Gemini Grow",
+    [
+        "Date",
+        "Time (UTC)",
+        "Type",
+        "Symbol",
+        "Borrower",
+        "Rate (bps)",
+        "APY",
     ],
     header_fixed=False,
     worksheet_name="Gemini",
